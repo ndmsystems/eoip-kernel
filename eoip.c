@@ -45,6 +45,7 @@
 #include <net/xfrm.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <net/netlink.h>
 #include <net/rtnetlink.h>
 #include <net/gre.h>
 
@@ -53,6 +54,8 @@
 #include <net/ip6_fib.h>
 #include <net/ip6_route.h>
 #endif
+
+#include "eoip_version.h"
 
 static struct rtnl_link_ops eoip_ops __read_mostly;
 static int eoip_tunnel_bind_dev(struct net_device *dev);
@@ -77,14 +80,6 @@ struct eoip_net {
 
 #define for_each_ip_tunnel_rcu(start) \
 	for (t = rcu_dereference(start); t; t = rcu_dereference(t->next))
-
-/* often modified stats are per cpu, other are shared (netdev->stats) */
-struct pcpu_tstats {
-	unsigned long rx_packets;
-	unsigned long rx_bytes;
-	unsigned long tx_packets;
-	unsigned long tx_bytes;
-};
 
 static struct net_device_stats *eoip_if_get_stats(struct net_device *dev)
 {
@@ -427,7 +422,6 @@ drop_nolock:
 static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ip_tunnel *tunnel = netdev_priv(dev);
-	struct pcpu_tstats *tstats;
 	const struct iphdr *old_iph = ip_hdr(skb);
 	const struct iphdr *tiph;
 	struct flowi4 fl4;
@@ -535,9 +529,7 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 	((__be16 *)(iph + 1))[2] = htons(frame_size);
 	((__le16 *)(iph + 1))[3] = cpu_to_le16(tunnel->parms.i_key);
 
-	nf_reset(skb);
-	tstats = this_cpu_ptr(dev->tstats);
-	__IPTUNNEL_XMIT(tstats, &dev->stats);
+	iptunnel_xmit(skb, dev);
 	return NETDEV_TX_OK;
 
 tx_error:
@@ -850,17 +842,16 @@ static int eoip_fill_info(struct sk_buff *skb, const struct net_device *dev)
 	struct ip_tunnel *t = netdev_priv(dev);
 	struct ip_tunnel_parm *p = &t->parms;
 
-	NLA_PUT_U32(skb, IFLA_GRE_LINK, p->link);
-	NLA_PUT_BE32(skb, IFLA_GRE_IKEY, p->i_key);
-	NLA_PUT_BE32(skb, IFLA_GRE_LOCAL, p->iph.saddr);
-	NLA_PUT_BE32(skb, IFLA_GRE_REMOTE, p->iph.daddr);
-	NLA_PUT_U8(skb, IFLA_GRE_TTL, p->iph.ttl);
-	NLA_PUT_U8(skb, IFLA_GRE_TOS, p->iph.tos);
+	if (nla_put_u32(skb, IFLA_GRE_LINK, p->link) ||
+		nla_put_be32(skb, IFLA_GRE_IKEY, p->i_key) ||
+		nla_put_be32(skb, IFLA_GRE_LOCAL, p->iph.saddr) ||
+		nla_put_be32(skb, IFLA_GRE_REMOTE, p->iph.daddr) ||
+		nla_put_u8(skb, IFLA_GRE_TTL, p->iph.ttl) ||
+		nla_put_u8(skb, IFLA_GRE_TOS, p->iph.tos) ) {
+		return -EMSGSIZE;
+	}
 
 	return 0;
-
-nla_put_failure:
-	return -EMSGSIZE;
 }
 
 static const struct nla_policy eoip_policy[IFLA_GRE_MAX + 1] = {
@@ -893,7 +884,7 @@ static int __init eoip_init(void)
 {
 	int err;
 
-	printk(KERN_INFO "EoIP (IPv4) tunneling driver\n");
+	printk(KERN_INFO "EoIP (IPv4) tunneling driver v" EOIP_VERSION "\n");
 
 	err = register_pernet_device(&eoip_net_ops);
 	if (err < 0)
@@ -901,7 +892,7 @@ static int __init eoip_init(void)
 
 	err = gre_add_protocol(&eoip_protocol, GREPROTO_NONSTD_EOIP);
 	if (err < 0) {
-		printk(KERN_INFO "eoip init: can't add protocol\n");
+		printk(KERN_ERR "EoIP (IPv4) init: can't add EoIP protocol to GRE demux\n");
 		goto add_proto_failed;
 	}
 
@@ -923,7 +914,7 @@ static void __exit eoip_fini(void)
 {
 	rtnl_link_unregister(&eoip_ops);
 	if (gre_del_protocol(&eoip_protocol, GREPROTO_NONSTD_EOIP) < 0)
-		printk(KERN_INFO "eoip close: can't remove protocol\n");
+		printk(KERN_INFO "EoIP (IPv4) close: can't remove EoIP protocol from GRE demux\n");
 	unregister_pernet_device(&eoip_net_ops);
 }
 

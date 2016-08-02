@@ -1,0 +1,17 @@
+.built
+.built_check
+.configured_*
+.dep_files
+.eoip.ko.cmd
+.eoip.mod.o.cmd
+.eoip.o.cmd
+.prepared_*
+.tmp_versions/
+Module.symvers
+eoip.ko
+eoip.mod.c
+eoip.mod.o
+eoip.o
+eoip_version.h
+ipkg-*/
+modules.order
