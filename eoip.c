@@ -55,6 +55,10 @@
 #include <net/ip6_route.h>
 #endif
 
+#if IS_ENABLED(CONFIG_NETFILTER_XT_NDMMARK)
+#include <linux/netfilter/xt_ndmmark.h>
+#endif /* CONFIG_NETFILTER_XT_NDMMARK */
+
 #include "eoip_version.h"
 
 static struct rtnl_link_ops eoip_ops __read_mostly;
@@ -438,6 +442,12 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 	int mtu;
 	uint16_t frame_size;
 
+#if IS_ENABLED(CONFIG_NETFILTER_XT_NDMMARK) && defined(SO_NDMMARK)
+	if (unlikely(skb->ndm_mark == XT_NDMMARK_DISCOVERY_DROP)) {
+		goto tx_skip;
+	}
+#endif
+
 	IPCB(skb)->flags = 0;
 
 	gre_hlen = tunnel->hlen;
@@ -537,6 +547,7 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 
 tx_error:
 	dev->stats.tx_errors++;
+tx_skip:
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
