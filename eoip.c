@@ -120,10 +120,12 @@ static struct ip_tunnel *eoip_tunnel_lookup(struct net_device *dev,
 	int score, cand_score = 8;
 
 	for_each_ip_tunnel_rcu(ign->tunnels[h0]) {
-		/* Relax checks for local source as it can never match when source is autodetected by routing */
-		if (	remote != t->parms.iph.daddr ||
-				key != t->parms.i_key ||
-				!(t->dev->flags & IFF_UP) )
+		/* Relax checks for local source as it can never match
+		 * when source is autodetected by routing
+		 */
+		if (remote != t->parms.iph.daddr ||
+			key != t->parms.i_key ||
+			!(t->dev->flags & IFF_UP))
 			continue;
 
 		score = 0;
@@ -267,16 +269,16 @@ static void eoip_err(struct sk_buff *skb, u32 info)
 {
 
 /* All the routers (except for Linux) return only
-   8 bytes of packet payload. It means, that precise relaying of
-   ICMP in the real Internet is absolutely infeasible.
-
-   Moreover, Cisco "wise men" put GRE key to the third word
-   in GRE header. It makes impossible maintaining even soft state for keyed
-   GRE tunnels with enabled checksum. Tell them "thank you".
-
-   Well, I wonder, rfc1812 was written by Cisco employee,
-   what the hell these idiots break standrads established
-   by themself???
+ *  8 bytes of packet payload. It means, that precise relaying of
+ *  ICMP in the real Internet is absolutely infeasible.
+ *
+ *  Moreover, Cisco "wise men" put GRE key to the third word
+ *  in GRE header. It makes impossible maintaining even soft state for keyed
+ *  GRE tunnels with enabled checksum. Tell them "thank you".
+ *
+ *  Well, I wonder, rfc1812 was written by Cisco employee,
+ *  what the hell these idiots break standrads established
+ *  by themself???
  */
 
 	const struct iphdr *iph = (const struct iphdr *)skb->data;
@@ -318,8 +320,8 @@ static void eoip_err(struct sk_buff *skb, u32 info)
 			return;
 		default:
 			/* All others are translated to HOST_UNREACH.
-			   rfc2003 contains "deep thoughts" about NET_UNREACH,
-			   I believe they are just ether pollution. --ANK
+			 *  rfc2003 contains "deep thoughts" about NET_UNREACH,
+			 *  I believe they are just ether pollution. --ANK
 			 */
 			break;
 		}
@@ -443,9 +445,8 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 	uint16_t frame_size;
 
 #if IS_ENABLED(CONFIG_NETFILTER_XT_NDMMARK) && defined(SO_NDMMARK)
-	if (unlikely(skb->ndm_mark == XT_NDMMARK_DISCOVERY_DROP)) {
+	if (unlikely(skb->ndm_mark == XT_NDMMARK_DISCOVERY_DROP))
 		goto tx_skip;
-	}
 #endif
 
 	IPCB(skb)->flags = 0;
@@ -604,10 +605,12 @@ static int eoip_tunnel_bind_dev(struct net_device *dev)
 static int eoip_if_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct ip_tunnel *tunnel = netdev_priv(dev);
+
 	if (new_mtu < 68 ||
 			new_mtu > 0xFFF8 - dev->hard_header_len - tunnel->hlen)
 		return -EINVAL;
 	dev->mtu = new_mtu;
+
 	return 0;
 }
 
@@ -625,6 +628,7 @@ static const struct gre_protocol eoip_protocol = {
 static void eoip_destroy_tunnels(struct eoip_net *ign, struct list_head *head)
 {
 	int h;
+
 	for (h = 0; h < HASH_SIZE; h++) {
 		struct ip_tunnel *t;
 
@@ -861,7 +865,7 @@ static int eoip_fill_info(struct sk_buff *skb, const struct net_device *dev)
 		nla_put_be32(skb, IFLA_GRE_LOCAL, p->iph.saddr) ||
 		nla_put_be32(skb, IFLA_GRE_REMOTE, p->iph.daddr) ||
 		nla_put_u8(skb, IFLA_GRE_TTL, p->iph.ttl) ||
-		nla_put_u8(skb, IFLA_GRE_TOS, p->iph.tos) ) {
+		nla_put_u8(skb, IFLA_GRE_TOS, p->iph.tos)) {
 		return -EMSGSIZE;
 	}
 
@@ -898,7 +902,7 @@ static int __init eoip_init(void)
 {
 	int err;
 
-	printk(KERN_INFO "EoIP (IPv4) tunneling driver v" EOIP_VERSION "\n");
+	pr_info("EoIP (IPv4) tunneling driver v" EOIP_VERSION "\n");
 
 	err = register_pernet_device(&eoip_net_ops);
 	if (err < 0)
@@ -906,7 +910,7 @@ static int __init eoip_init(void)
 
 	err = gre_add_protocol(&eoip_protocol, GREPROTO_NONSTD_EOIP);
 	if (err < 0) {
-		printk(KERN_ERR "EoIP (IPv4) init: can't add EoIP protocol to GRE demux\n");
+		pr_err("EoIP (IPv4) init: can't add EoIP protocol to GRE demux\n");
 		goto add_proto_failed;
 	}
 
@@ -928,7 +932,7 @@ static void __exit eoip_fini(void)
 {
 	rtnl_link_unregister(&eoip_ops);
 	if (gre_del_protocol(&eoip_protocol, GREPROTO_NONSTD_EOIP) < 0)
-		printk(KERN_INFO "EoIP (IPv4) close: can't remove EoIP protocol from GRE demux\n");
+		pr_err("EoIP (IPv4) close: can't remove EoIP protocol from GRE demux\n");
 	unregister_pernet_device(&eoip_net_ops);
 }
 
