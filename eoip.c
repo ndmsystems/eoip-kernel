@@ -33,6 +33,8 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/etherdevice.h>
 #include <linux/if_ether.h>
+#include <linux/sysctl.h>
+#include <linux/proc_fs.h>
 
 #include <net/sock.h>
 #include <net/ip.h>
@@ -60,6 +62,46 @@
 #endif /* CONFIG_NETFILTER_XT_NDMMARK */
 
 #include "eoip_version.h"
+
+atomic_t eoip_allow_fragment;
+static int eoip_allow_fragment_value;
+
+int eoip_sysctl_allow_fragment_proc_handler(struct ctl_table *table,
+		int write, void __user *buffer, size_t *lenp, loff_t *ppos) {
+	int res = proc_dointvec(table, write, buffer, lenp, ppos);
+
+	if (!res && (eoip_allow_fragment_value !=
+			atomic_read(&eoip_allow_fragment))) {
+		atomic_set(&eoip_allow_fragment, eoip_allow_fragment_value);
+		if (atomic_read(&eoip_allow_fragment)) {
+		/* Value was successfully changed */
+			pr_info("EoIP (IPv4) fragmentation is enabled\n");
+		} else {
+			pr_info("EoIP (IPv4) fragmentation is disabled\n");
+		}
+	}
+
+	return res;
+}
+
+static struct ctl_table_header *eoip_sysctl_header;
+
+static struct ctl_table eoip_sysctl_table[] = {
+	{
+		.procname			= "eoip_allow_fragment",
+		.maxlen				= sizeof(int),
+		.mode				= 0644,
+		.data				= &eoip_allow_fragment_value,
+		.proc_handler		= eoip_sysctl_allow_fragment_proc_handler
+	},
+	{}
+};
+
+static struct ctl_path eoip_path[] = {
+	{ .procname =			"net", },
+	{ .procname =			"core", },
+	{}
+};
 
 static struct rtnl_link_ops eoip_ops __read_mostly;
 static int eoip_tunnel_bind_dev(struct net_device *dev);
@@ -428,8 +470,24 @@ drop_nolock:
 	return 0;
 }
 
+static inline int ip_skb_dst_mtu(struct sk_buff *skb)
+{
+	struct inet_sock *inet = skb->sk ? inet_sk(skb->sk) : NULL;
+
+	return (inet && inet->pmtudisc == IP_PMTUDISC_PROBE) ?
+	       skb_dst(skb)->dev->mtu : dst_mtu(skb_dst(skb));
+}
+
+static int eoip_if_xmit_finish_(struct sk_buff *skb)
+{
+	ip_local_out(skb);
+
+	return NETDEV_TX_OK;
+}
+
 static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	struct pcpu_tstats *tstats = this_cpu_ptr(dev->tstats);
 	struct ip_tunnel *tunnel = netdev_priv(dev);
 	const struct iphdr *old_iph = ip_hdr(skb);
 	const struct iphdr *tiph;
@@ -443,6 +501,8 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 	__be32 dst;
 	int mtu;
 	uint16_t frame_size;
+	int pkt_len;
+	int err = 0;
 
 #if IS_ENABLED(CONFIG_NETFILTER_XT_NDMMARK) && defined(SO_NDMMARK)
 	if (unlikely(skb->ndm_mark == XT_NDMMARK_DISCOVERY_DROP))
@@ -543,7 +603,30 @@ static netdev_tx_t eoip_if_xmit(struct sk_buff *skb, struct net_device *dev)
 	((__be16 *)(iph + 1))[2] = htons(frame_size);
 	((__le16 *)(iph + 1))[3] = cpu_to_le16(tunnel->parms.i_key);
 
-	iptunnel_xmit(skb, dev);
+	if (atomic_read(&eoip_allow_fragment)) {
+		pkt_len = skb->len - skb_transport_offset(skb);
+
+		nf_reset(skb);
+		skb->ip_summed = CHECKSUM_NONE;
+		ip_select_ident(skb, NULL);
+
+		if (skb->len > ip_skb_dst_mtu(skb))
+			err = ip_fragment(skb, eoip_if_xmit_finish_);
+		 else
+			err = ip_local_out(skb);
+
+		if (likely(net_xmit_eval(err) == 0)) {
+			u64_stats_update_begin(&tstats->syncp);
+			tstats->tx_bytes += pkt_len;
+			tstats->tx_packets++;
+			u64_stats_update_end(&tstats->syncp);
+		} else {
+			dev->stats.tx_errors++;
+			dev->stats.tx_aborted_errors++;
+		}
+	} else
+		iptunnel_xmit(skb, dev);
+
 	return NETDEV_TX_OK;
 
 tx_error:
@@ -904,6 +987,9 @@ static int __init eoip_init(void)
 
 	pr_info("EoIP (IPv4) tunneling driver v" EOIP_VERSION "\n");
 
+	atomic_set(&eoip_allow_fragment, 0);
+	eoip_allow_fragment_value = 0;
+
 	err = register_pernet_device(&eoip_net_ops);
 	if (err < 0)
 		return err;
@@ -918,6 +1004,8 @@ static int __init eoip_init(void)
 	if (err < 0)
 		goto eoip_ops_failed;
 
+	eoip_sysctl_header = register_sysctl_paths(eoip_path, eoip_sysctl_table);
+
 out:
 	return err;
 
@@ -930,6 +1018,9 @@ add_proto_failed:
 
 static void __exit eoip_fini(void)
 {
+	if (eoip_sysctl_header)
+		unregister_sysctl_table(eoip_sysctl_header);
+
 	rtnl_link_unregister(&eoip_ops);
 	if (gre_del_protocol(&eoip_protocol, GREPROTO_NONSTD_EOIP) < 0)
 		pr_err("EoIP (IPv4) close: can't remove EoIP protocol from GRE demux\n");
