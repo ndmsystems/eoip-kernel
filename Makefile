@@ -5,7 +5,15 @@ VERSION_FILE		:= eoip_version.h
 
 ifneq ($(KERNELRELEASE),)
 
-obj-m = eoip.o
+KERNEL_PFX			:= $(shell echo "$(KERNELRELEASE)" | head -c 3)
+
+ifeq ($(KERNEL_PFX),4.9)
+eoip				:= 4.9/eoip.o
+else
+eoip				:= eoip.o
+endif
+
+obj-m				:= $(eoip)
 
 else
 
